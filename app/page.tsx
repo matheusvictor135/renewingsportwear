@@ -1,12 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import { createClient, Session } from "@supabase/supabase-js";
+import { useEffect, useMemo, useState } from "react";
 
 const BRAND_GREEN = "#aecb41";
-const WHATSAPP_NUMBER = "5587991008521";
-const INSTAGRAM_URL = "https://instagram.com/renewingsportwear";
+const WHATSAPP = "5587991008521";
+const INSTAGRAM = "https://instagram.com/renewingsportwear";
+const ADMIN_EMAIL = "admin@renewing.com";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+const supabase =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null;
 
 type Variant = {
+  id?: string;
   color: string;
   size: string;
   stock: number;
@@ -18,91 +29,123 @@ type Product = {
   price: number;
   image: string;
   description: string;
-  variants: Variant[];
+  product_variants: Variant[];
 };
 
-const PRODUCTS: Product[] = [
-  {
-    id: "1",
-    name: "Camiseta Performance",
-    price: 99.9,
-    image:
-      "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=80",
-    description: "Leve, esportiva e pronta para o movimento.",
-    variants: [
-      { color: "Verde", size: "P", stock: 4 },
-      { color: "Verde", size: "M", stock: 5 },
-      { color: "Branco", size: "G", stock: 3 },
-      { color: "Preto", size: "M", stock: 6 },
-    ],
-  },
-  {
-    id: "2",
-    name: "Short Training Elite",
-    price: 119.9,
-    image:
-      "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=900&q=80",
-    description: "Mobilidade, conforto e visual premium.",
-    variants: [
-      { color: "Preto", size: "M", stock: 3 },
-      { color: "Preto", size: "G", stock: 2 },
-      { color: "Cinza", size: "GG", stock: 5 },
-    ],
-  },
-  {
-    id: "3",
-    name: "Conjunto Active Pro",
-    price: 189.9,
-    image:
-      "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=900&q=80",
-    description: "Visual forte para quem vive em movimento.",
-    variants: [
-      { color: "Verde", size: "P", stock: 2 },
-      { color: "Verde", size: "M", stock: 2 },
-      { color: "Off-white", size: "G", stock: 1 },
-      { color: "Off-white", size: "GG", stock: 1 },
-    ],
-  },
-];
-
 function formatPrice(value: number) {
-  return value.toLocaleString("pt-BR", {
+  return Number(value).toLocaleString("pt-BR", {
     style: "currency",
     currency: "BRL",
   });
 }
 
 function uniqueColors(product: Product) {
-  return [...new Set(product.variants.map((v) => v.color))];
+  return [...new Set(product.product_variants.map((v) => v.color))];
 }
 
 function sizesForColor(product: Product, color: string) {
   return [
     ...new Set(
-      product.variants.filter((v) => v.color === color).map((v) => v.size)
+      product.product_variants
+        .filter((v) => v.color === color)
+        .map((v) => v.size)
     ),
   ];
 }
 
 function getVariant(product: Product, color: string, size: string) {
-  return product.variants.find((v) => v.color === color && v.size === size);
+  return product.product_variants.find(
+    (v) => v.color === color && v.size === size
+  );
+}
+
+function totalStock(product: Product) {
+  return product.product_variants.reduce((sum, v) => sum + Number(v.stock), 0);
 }
 
 export default function Home() {
+  const [products, setProducts] = useState<Product[]>([]);
+  const [session, setSession] = useState<Session | null>(null);
   const [selected, setSelected] = useState<Record<string, { color: string; size: string }>>({});
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
 
-  function getSelection(product: Product) {
-    const firstColor = uniqueColors(product)[0];
-    const firstSize = sizesForColor(product, firstColor)[0];
+  const [email, setEmail] = useState(ADMIN_EMAIL);
+  const [password, setPassword] = useState("");
 
-    return selected[product.id] || {
-      color: firstColor,
-      size: firstSize,
-    };
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [image, setImage] = useState("");
+  const [description, setDescription] = useState("");
+  const [variants, setVariants] = useState<Variant[]>([
+    { color: "", size: "", stock: 0 },
+  ]);
+
+  const isAdmin = session?.user?.email === ADMIN_EMAIL;
+
+  async function loadProducts() {
+    if (!supabase) return;
+
+    setLoading(true);
+
+    const { data, error } = await supabase
+      .from("products")
+      .select("id,name,price,image,description,product_variants(id,color,size,stock)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setProducts((data || []) as Product[]);
+    }
+
+    setLoading(false);
   }
 
+  useEffect(() => {
+    if (!supabase) {
+      setMessage("Supabase não configurado. Verifique as variáveis na Vercel.");
+      setLoading(false);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    loadProducts();
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  const selectionMap = useMemo(() => {
+    const next = { ...selected };
+
+    products.forEach((product) => {
+      const colors = uniqueColors(product);
+      const firstColor = colors[0] || "";
+      const currentColor = next[product.id]?.color || firstColor;
+      const sizes = sizesForColor(product, currentColor);
+      const firstSize = sizes[0] || "";
+      const currentSize = next[product.id]?.size || firstSize;
+
+      next[product.id] = {
+        color: currentColor,
+        size: currentSize,
+      };
+    });
+
+    return next;
+  }, [products, selected]);
+
   function changeColor(product: Product, color: string) {
-    const firstSize = sizesForColor(product, color)[0];
+    const firstSize = sizesForColor(product, color)[0] || "";
 
     setSelected((current) => ({
       ...current,
@@ -114,15 +157,118 @@ export default function Home() {
   }
 
   function changeSize(product: Product, size: string) {
-    const current = getSelection(product);
-
-    setSelected((old) => ({
-      ...old,
+    setSelected((current) => ({
+      ...current,
       [product.id]: {
-        ...current,
+        ...current[product.id],
         size,
       },
     }));
+  }
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!supabase) return;
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setMessage("Login realizado com sucesso.");
+      setPassword("");
+    }
+  }
+
+  async function logout() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setMessage("Você saiu do painel.");
+  }
+
+  function updateVariant(index: number, field: keyof Variant, value: string) {
+    setVariants((current) =>
+      current.map((variant, i) =>
+        i === index
+          ? {
+              ...variant,
+              [field]: field === "stock" ? Number(value) : value,
+            }
+          : variant
+      )
+    );
+  }
+
+  async function addProduct(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!supabase || !isAdmin) return;
+
+    const cleanVariants = variants.filter(
+      (v) => v.color.trim() && v.size.trim()
+    );
+
+    if (!name || !price || !image || !description || cleanVariants.length === 0) {
+      setMessage("Preencha todos os campos e pelo menos uma variação.");
+      return;
+    }
+
+    const { data: product, error } = await supabase
+      .from("products")
+      .insert({
+        name,
+        price: Number(price),
+        image,
+        description,
+      })
+      .select("id")
+      .single();
+
+    if (error || !product) {
+      setMessage(error?.message || "Erro ao salvar produto.");
+      return;
+    }
+
+    const { error: variantsError } = await supabase
+      .from("product_variants")
+      .insert(
+        cleanVariants.map((v) => ({
+          product_id: product.id,
+          color: v.color,
+          size: v.size,
+          stock: Number(v.stock),
+        }))
+      );
+
+    if (variantsError) {
+      setMessage(variantsError.message);
+      return;
+    }
+
+    setName("");
+    setPrice("");
+    setImage("");
+    setDescription("");
+    setVariants([{ color: "", size: "", stock: 0 }]);
+    setMessage("Produto cadastrado com sucesso.");
+    loadProducts();
+  }
+
+  async function deleteProduct(id: string) {
+    if (!supabase || !isAdmin) return;
+
+    const { error } = await supabase.from("products").delete().eq("id", id);
+
+    if (error) {
+      setMessage(error.message);
+    } else {
+      setMessage("Produto excluído.");
+      loadProducts();
+    }
   }
 
   return (
@@ -145,10 +291,9 @@ export default function Home() {
           </div>
 
           <a
-            href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-              "Olá! Quero comprar na Renewing Sportwear."
-            )}`}
+            href={`https://wa.me/${WHATSAPP}`}
             target="_blank"
+            rel="noreferrer"
           >
             <button className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-semibold text-white">
               Comprar agora
@@ -170,55 +315,19 @@ export default function Home() {
             <p className="mb-4 inline-flex rounded-full bg-white/70 px-4 py-2 text-xs font-bold uppercase tracking-[0.25em]">
               Lançamento oficial
             </p>
-
             <h1 className="text-5xl font-black leading-none tracking-tight md:text-7xl">
               Essencialmente para quem vive em movimento.
             </h1>
-
             <p className="mt-6 max-w-xl text-lg leading-8 text-zinc-700">
               Performance, estilo e identidade em peças esportivas premium.
-              A Renewing Sportwear nasceu para quem vive o esporte com atitude.
             </p>
-
-            <div className="mt-8 flex flex-col gap-4 sm:flex-row">
-              <a
-                href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-                  "Olá! Quero ver o catálogo da Renewing Sportwear."
-                )}`}
-                target="_blank"
-              >
-                <button className="h-12 rounded-2xl bg-zinc-950 px-6 text-white">
-                  Comprar pelo WhatsApp
-                </button>
-              </a>
-
-              <a href={INSTAGRAM_URL} target="_blank">
-                <button className="h-12 rounded-2xl border border-zinc-300 bg-white px-6">
-                  Ver Instagram
-                </button>
-              </a>
-            </div>
           </div>
 
           <div className="rounded-[2rem] bg-zinc-950 p-6 shadow-2xl">
             <div className="overflow-hidden rounded-[1.5rem] bg-white">
-              <div className="flex items-center justify-between px-5 py-4">
-                <div>
-                  <p className="text-sm font-semibold text-zinc-500">Nova coleção</p>
-                  <p className="text-xl font-black">Renewing Sportwear</p>
-                </div>
-
-                <span
-                  className="rounded-full px-3 py-1 text-xs font-bold"
-                  style={{ background: BRAND_GREEN }}
-                >
-                  Premium Drop
-                </span>
-              </div>
-
               <img
                 src="https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&w=1200&q=80"
-                alt="Moda esportiva premium"
+                alt="Moda esportiva"
                 className="h-[420px] w-full object-cover"
               />
             </div>
@@ -226,24 +335,28 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="catalogo" className="mx-auto max-w-7xl px-6 py-20">
-        <div className="mb-12">
-          <p className="text-sm font-bold uppercase tracking-[0.25em] text-zinc-500">
-            Catálogo
-          </p>
-          <h2 className="text-4xl font-black">Peças para vender agora</h2>
-        </div>
+      <section className="mx-auto max-w-7xl px-6 py-20">
+        <p className="text-sm font-bold uppercase tracking-[0.25em] text-zinc-500">
+          Catálogo
+        </p>
+        <h2 className="mb-10 text-4xl font-black">Peças disponíveis</h2>
+
+        {loading && <p>Carregando produtos...</p>}
 
         <div className="grid gap-8 md:grid-cols-3">
-          {PRODUCTS.map((product) => {
-            const selection = getSelection(product);
+          {products.map((product) => {
+            const selection = selectionMap[product.id];
             const colors = uniqueColors(product);
-            const sizes = sizesForColor(product, selection.color);
-            const variant = getVariant(product, selection.color, selection.size);
+            const sizes = sizesForColor(product, selection?.color || "");
+            const variant = getVariant(
+              product,
+              selection?.color || "",
+              selection?.size || ""
+            );
             const stock = variant?.stock || 0;
 
-            const message = encodeURIComponent(
-              `Olá! Quero comprar ${product.name}. Cor: ${selection.color}. Tamanho: ${selection.size}.`
+            const whatsappMessage = encodeURIComponent(
+              `Olá! Quero comprar ${product.name}. Cor: ${selection?.color}. Tamanho: ${selection?.size}.`
             );
 
             return (
@@ -251,13 +364,11 @@ export default function Home() {
                 key={product.id}
                 className="overflow-hidden rounded-[2rem] border bg-white shadow-sm"
               >
-                <div className="aspect-[4/5] overflow-hidden bg-zinc-100">
-                  <img
-                    src={product.image}
-                    alt={product.name}
-                    className="h-full w-full object-cover"
-                  />
-                </div>
+                <img
+                  src={product.image}
+                  alt={product.name}
+                  className="h-80 w-full object-cover"
+                />
 
                 <div className="p-6">
                   <div className="mb-4 flex items-start justify-between gap-4">
@@ -267,7 +378,6 @@ export default function Home() {
                         {product.description}
                       </p>
                     </div>
-
                     <span
                       className="rounded-full px-3 py-1 text-sm font-bold"
                       style={{ background: BRAND_GREEN }}
@@ -276,59 +386,52 @@ export default function Home() {
                     </span>
                   </div>
 
-                  <div className="space-y-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold">
-                        Selecione a cor
-                      </label>
-                      <select
-                        value={selection.color}
-                        onChange={(e) => changeColor(product, e.target.value)}
-                        className="h-11 w-full rounded-2xl border px-4"
-                      >
-                        {colors.map((color) => (
-                          <option key={color}>{color}</option>
-                        ))}
-                      </select>
-                    </div>
+                  <label className="mb-2 block text-sm font-semibold">
+                    Cor
+                  </label>
+                  <select
+                    value={selection?.color || ""}
+                    onChange={(e) => changeColor(product, e.target.value)}
+                    className="mb-4 h-11 w-full rounded-2xl border px-4"
+                  >
+                    {colors.map((color) => (
+                      <option key={color}>{color}</option>
+                    ))}
+                  </select>
 
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold">
-                        Selecione o tamanho
-                      </label>
-                      <select
-                        value={selection.size}
-                        onChange={(e) => changeSize(product, e.target.value)}
-                        className="h-11 w-full rounded-2xl border px-4"
-                      >
-                        {sizes.map((size) => (
-                          <option key={size}>{size}</option>
-                        ))}
-                      </select>
-                    </div>
+                  <label className="mb-2 block text-sm font-semibold">
+                    Tamanho
+                  </label>
+                  <select
+                    value={selection?.size || ""}
+                    onChange={(e) => changeSize(product, e.target.value)}
+                    className="mb-4 h-11 w-full rounded-2xl border px-4"
+                  >
+                    {sizes.map((size) => (
+                      <option key={size}>{size}</option>
+                    ))}
+                  </select>
 
-                    <div className="rounded-2xl bg-zinc-50 p-4 text-sm">
-                      <p>
-                        <strong>Disponível:</strong> {stock} unidade(s)
-                      </p>
-                    </div>
-                  </div>
+                  <p className="mb-4 rounded-2xl bg-zinc-50 p-4 text-sm">
+                    <strong>Disponível:</strong> {stock} unidade(s)
+                  </p>
 
                   {stock > 0 ? (
                     <a
-                      href={`https://wa.me/${WHATSAPP_NUMBER}?text=${message}`}
+                      href={`https://wa.me/${WHATSAPP}?text=${whatsappMessage}`}
                       target="_blank"
+                      rel="noreferrer"
                     >
-                      <button className="mt-4 h-11 w-full rounded-2xl bg-zinc-950 text-white">
+                      <button className="h-11 w-full rounded-2xl bg-zinc-950 text-white">
                         Comprar pelo WhatsApp
                       </button>
                     </a>
                   ) : (
                     <button
                       disabled
-                      className="mt-4 h-11 w-full rounded-2xl bg-zinc-200 text-zinc-500"
+                      className="h-11 w-full rounded-2xl bg-zinc-200 text-zinc-500"
                     >
-                      Opção indisponível
+                      Indisponível
                     </button>
                   )}
                 </div>
@@ -338,59 +441,99 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="bg-zinc-950 text-white">
-        <div className="mx-auto grid max-w-7xl gap-6 px-6 py-20 md:grid-cols-3">
-          <div className="rounded-[2rem] bg-white/5 p-8">
-            <h3 className="text-2xl font-black">Compra rápida</h3>
-            <p className="mt-3 text-sm text-zinc-300">
-              Atendimento direto pelo WhatsApp.
-            </p>
-          </div>
+      <section className="bg-zinc-950 px-6 py-20 text-white">
+        <div className="mx-auto max-w-7xl">
+          <h2 className="text-4xl font-black">Painel administrador</h2>
 
-          <div className="rounded-[2rem] bg-white/5 p-8">
-            <h3 className="text-2xl font-black">Estilo premium</h3>
-            <p className="mt-3 text-sm text-zinc-300">
-              Visual forte, esportivo e moderno.
-            </p>
-          </div>
+          {message && <p className="mt-4 text-sm text-yellow-300">{message}</p>}
 
-          <div className="rounded-[2rem] bg-white/5 p-8">
-            <h3 className="text-2xl font-black">Pronto para vender</h3>
-            <p className="mt-3 text-sm text-zinc-300">
-              Cliente escolhe cor e tamanho antes de comprar.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="mx-auto max-w-7xl px-6 py-20">
-        <div className="rounded-[2rem] border bg-zinc-50 p-8 md:p-12">
-          <p className="text-sm font-bold uppercase tracking-[0.25em] text-zinc-500">
-            Contato
-          </p>
-
-          <h2 className="mt-3 text-4xl font-black">
-            Fale com a Renewing Sportwear
-          </h2>
-
-          <div className="mt-8 flex flex-col gap-4 sm:flex-row">
-            <a
-              href={`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
-                "Olá! Quero comprar na Renewing Sportwear."
-              )}`}
-              target="_blank"
-            >
-              <button className="rounded-2xl bg-zinc-950 px-6 py-4 text-white">
-                WhatsApp: (87) 99100-8521
+          {!isAdmin ? (
+            <form onSubmit={login} className="mt-8 max-w-md space-y-4">
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="h-12 w-full rounded-2xl px-4 text-black"
+                placeholder="E-mail"
+              />
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                className="h-12 w-full rounded-2xl px-4 text-black"
+                placeholder="Senha"
+              />
+              <button className="h-12 w-full rounded-2xl bg-white text-black font-bold">
+                Entrar
               </button>
-            </a>
+            </form>
+          ) : (
+            <div className="mt-8 grid gap-8 lg:grid-cols-2">
+              <form onSubmit={addProduct} className="space-y-4 rounded-[2rem] bg-white p-6 text-black">
+                <h3 className="text-2xl font-black">Adicionar produto</h3>
 
-            <a href={INSTAGRAM_URL} target="_blank">
-              <button className="rounded-2xl border bg-white px-6 py-4">
-                Instagram: @renewingsportwear
-              </button>
-            </a>
-          </div>
+                <input value={name} onChange={(e) => setName(e.target.value)} className="h-12 w-full rounded-2xl border px-4" placeholder="Nome do produto" />
+                <input value={price} onChange={(e) => setPrice(e.target.value)} type="number" step="0.01" className="h-12 w-full rounded-2xl border px-4" placeholder="Preço" />
+                <input value={image} onChange={(e) => setImage(e.target.value)} className="h-12 w-full rounded-2xl border px-4" placeholder="URL da imagem" />
+                <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="w-full rounded-2xl border px-4 py-3" placeholder="Descrição" />
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold">Variações</p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setVariants((v) => [
+                          ...v,
+                          { color: "", size: "", stock: 0 },
+                        ])
+                      }
+                      className="rounded-2xl border px-4 py-2 text-sm"
+                    >
+                      Adicionar
+                    </button>
+                  </div>
+
+                  {variants.map((variant, index) => (
+                    <div key={index} className="grid gap-3 md:grid-cols-3">
+                      <input value={variant.color} onChange={(e) => updateVariant(index, "color", e.target.value)} className="h-11 rounded-2xl border px-4" placeholder="Cor" />
+                      <input value={variant.size} onChange={(e) => updateVariant(index, "size", e.target.value)} className="h-11 rounded-2xl border px-4" placeholder="Tamanho" />
+                      <input value={variant.stock} onChange={(e) => updateVariant(index, "stock", e.target.value)} type="number" className="h-11 rounded-2xl border px-4" placeholder="Estoque" />
+                    </div>
+                  ))}
+                </div>
+
+                <button className="h-12 w-full rounded-2xl bg-zinc-950 text-white">
+                  Salvar produto
+                </button>
+              </form>
+
+              <div className="rounded-[2rem] bg-white p-6 text-black">
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-2xl font-black">Produtos</h3>
+                  <button onClick={logout} className="rounded-2xl border px-4 py-2">
+                    Sair
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {products.map((product) => (
+                    <div key={product.id} className="rounded-2xl border p-4">
+                      <p className="font-black">{product.name}</p>
+                      <p className="text-sm text-zinc-600">
+                        {formatPrice(product.price)} • {totalStock(product)} em estoque
+                      </p>
+                      <button
+                        onClick={() => deleteProduct(product.id)}
+                        className="mt-3 rounded-2xl border px-4 py-2 text-sm"
+                      >
+                        Excluir
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
